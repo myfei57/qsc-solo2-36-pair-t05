@@ -73,6 +73,12 @@ class SealController:
             )
         )
 
+    def _limit(self, unit: str, name: str, fallback: Any) -> Any:
+        try:
+            return self._registry.value(self.scope(unit), name)
+        except UnknownReferenceError:
+            return fallback
+
     # ------------------------------------------------------------ read paths
     def _state_key(self, unit: str) -> str:
         return scope_key("seal", unit, "state")
@@ -82,11 +88,18 @@ class SealController:
 
     def minimum(self, unit: str) -> int:
         """Return the minimum acceptable seal pressure."""
-        return MIN_PRESSURE
+        return int(self._limit(unit, "min_pressure", MIN_PRESSURE))
+
+    def state(self, unit: str) -> str:
+        """Return the seal state label."""
+        record = self._stream.visible_view().current(self._state_key(unit))
+        if record is None:
+            return "idle"
+        return str(record.payload.get("state", "idle"))
 
     def established(self, unit: str) -> bool:
-        """Report whether the seal has been touched for a unit."""
-        return self._stream.visible_view().current(self._state_key(unit)) is not None
+        """Report whether the seal is currently established for a unit."""
+        return self.state(unit) == "established"
 
     def pressure(self, unit: str) -> int:
         """Return the last recorded seal pressure."""
@@ -97,7 +110,7 @@ class SealController:
 
     def margin(self, unit: str) -> int:
         """Return how far the seal pressure sits above its minimum."""
-        return 0
+        return self.pressure(unit) - self.minimum(unit)
 
     def status(self, unit: str) -> SealStatus:
         """Return the full seal condition of a unit."""
@@ -112,6 +125,15 @@ class SealController:
     # ----------------------------------------------------------- write paths
     def establish(self, unit: str, pressure: int) -> SealStatus:
         """Establish the seal, refusing a pressure below the minimum."""
+        minimum = self.minimum(unit)
+        if int(pressure) < minimum:
+            raise LimitViolationError(
+                f"seal pressure {pressure} is below the minimum {minimum} for unit {unit}",
+                unit=unit,
+                value=int(pressure),
+                low=minimum,
+                high=10_000,
+            )
         self._write(unit, "established", int(pressure), kind="seal.establish")
         return self.status(unit)
 
@@ -121,13 +143,32 @@ class SealController:
         return self.status(unit)
 
     def trim(self, unit: str, pressure: int) -> SealStatus:
-        """Adjust the recorded pressure."""
+        """Adjust the recorded pressure, refusing a negative reading."""
+        if int(pressure) < 0:
+            raise LimitViolationError(
+                f"seal pressure {pressure} cannot be negative for unit {unit}",
+                unit=unit,
+                value=int(pressure),
+                low=0,
+                high=10_000,
+            )
+        record = self._stream.append(
+            "seal.trim",
+            self._pressure_key(unit),
+            {"unit": unit, "value": int(pressure)},
+        )
+        self._stream.commit_upto(record.seq)
         return self.status(unit)
 
     def _write(self, unit: str, state: str, pressure: int, kind: str) -> None:
-        record = self._stream.append(
+        first = self._stream.append(
             kind,
             self._state_key(unit),
             {"unit": unit, "state": state},
         )
-        self._stream.commit_upto(record.seq)
+        second = self._stream.append(
+            kind,
+            self._pressure_key(unit),
+            {"unit": unit, "value": pressure},
+        )
+        self._stream.commit_upto(max(first.seq, second.seq))
