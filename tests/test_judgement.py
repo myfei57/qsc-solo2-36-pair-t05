@@ -181,6 +181,7 @@ def test_decision_rule_order_follows_priority(line) -> None:
         "ignition_latched",
         "feed_latched",
         "seal_missing",
+        "seal_low_pressure",
         "not_durable",
         "oil_missing",
     ]

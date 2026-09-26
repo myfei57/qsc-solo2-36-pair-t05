@@ -237,7 +237,7 @@ class LineSupervisor:
         self._board.define_gate(
             "feed_open",
             [
-                GateRequirement("seal_established", self._seal.established),
+                GateRequirement("seal_established", self._seal.ready),
                 GateRequirement("compressor_durable", self._compressor.durable),
                 GateRequirement("feed_not_latched", lambda unit: not self._feed.latched(unit)),
                 GateRequirement(
@@ -287,6 +287,23 @@ class LineSupervisor:
                 )
                 != "established",
                 priority=30,
+            )
+        )
+        table.add(
+            DecisionRule(
+                "seal_low_pressure",
+                "blocked",
+                lambda context: context.number(
+                    context.key("seal", context.unit, "pressure"), "value"
+                )
+                < context.number(
+                    context.key(
+                        "param", context.key("seal", context.unit), "min_pressure"
+                    ),
+                    "value",
+                    20.0,
+                ),
+                priority=25,
             )
         )
         table.add(
@@ -369,6 +386,8 @@ class LineSupervisor:
             scope_key("latch", "ignition", unit),
             scope_key("latch", "feed", unit),
             scope_key("seal", unit, "state"),
+            scope_key("seal", unit, "pressure"),
+            scope_key("param", scope_key("seal", unit), "min_pressure"),
             scope_key("compressor", unit, "durable"),
             scope_key("lube", unit, "state"),
         ]
